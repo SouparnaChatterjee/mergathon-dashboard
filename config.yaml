@@ -1,0 +1,40 @@
+# ============================================================
+# CircuitVerse Mergathon – Event Configuration
+# ============================================================
+
+event:
+  name: "CircuitVerse Mergathon 2025"
+  organization: "CircuitVerse"
+  startDate: "2025-05-22"
+  endDate: "2025-05-25"
+  timeZone: "UTC"
+
+repositories:
+  - "CircuitVerse/CircuitVerse"
+  - "CircuitVerse/mobile-app"
+  - "CircuitVerse/Interactive-Book"
+  - "CircuitVerse/cv-frontend-vue"
+
+scoring:
+  weights:
+    prMerged: 10
+    prOpened: 5
+    prReviewed: 3
+    issueClosed: 4
+    issueOpened: 2
+
+thresholds:
+  highActivity: 100
+  mediumActivity: 50
+
+teams:
+  - name: "Team Alpha"
+    color: "#3b82f6"
+    members:
+      - "dev-sarah"
+      - "coder-alex"
+  - name: "Team Beta"
+    color: "#8b5cf6"
+    members:
+      - "backend-mia"
+      - "docs-guru-chen"
