@@ -163,6 +163,7 @@ const PERMISSIONS_ERRORS = [
   "Resource not accessible by personal access tokens",
   "Must have push access",
   "Must be an org member",
+  "Must have admin rights",
   "Not Found",
   "Forbidden",
 ];
