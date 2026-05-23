@@ -13,8 +13,6 @@ import type {
   ContributionItem,
 } from "../src/types";
 
-// --------------- Configuration Loader & Parser ---------------
-
 interface YamlConfig {
   eventName: string;
   organization: string;
@@ -37,7 +35,6 @@ interface YamlConfig {
 
 function parseConfigYaml(content: string): YamlConfig {
   const lines = content.split(/\r?\n/);
-
   let eventName = "CircuitVerse Mergathon 2025";
   let organization = "CircuitVerse";
   let eventStartDate = "2025-05-22";
@@ -46,7 +43,6 @@ function parseConfigYaml(content: string): YamlConfig {
   const scoringWeights = { prMerged: 10, prOpened: 5, prReviewed: 3, issueClosed: 4, issueOpened: 2 };
   const thresholds = { highActivity: 100, mediumActivity: 50 };
   const teams: { name: string; color: string; members: string[] }[] = [];
-
   let currentTeam: any = null;
   let mode: "none" | "repos" | "members" = "none";
 
@@ -58,9 +54,7 @@ function parseConfigYaml(content: string): YamlConfig {
     const trimmed = cleanLine.trim();
     if (!trimmed) continue;
 
-    if (trimmed.startsWith("name:") && !trimmed.includes("- name:")) {
-      eventName = trimmed.split(":")[1].trim().replace(/['"]/g, ""); continue;
-    }
+    if (trimmed.startsWith("name:") && !trimmed.includes("- name:")) { eventName = trimmed.split(":")[1].trim().replace(/['"]/g, ""); continue; }
     if (trimmed.startsWith("organization:")) { organization = trimmed.split(":")[1].trim().replace(/['"]/g, ""); continue; }
     if (trimmed.startsWith("startDate:")) { eventStartDate = trimmed.split(":")[1].trim().replace(/['"]/g, ""); continue; }
     if (trimmed.startsWith("endDate:")) { eventEndDate = trimmed.split(":")[1].trim().replace(/['"]/g, ""); continue; }
@@ -87,7 +81,6 @@ function parseConfigYaml(content: string): YamlConfig {
   }
 
   if (repos.length === 0) repos.push("CircuitVerse/CircuitVerse", "CircuitVerse/mobile-app", "CircuitVerse/Interactive-Book", "CircuitVerse/cv-frontend-vue");
-
   return { eventName, organization, eventStartDate, eventEndDate, repos, scoringWeights, thresholds, teams };
 }
 
@@ -96,10 +89,7 @@ function loadConfig(): YamlConfig {
     const configPath = path.resolve(__dirname, "..", "config.yaml");
     if (!fs.existsSync(configPath)) { console.warn("⚠️  config.yaml not found, using defaults."); return getDefaultConfig(); }
     return parseConfigYaml(fs.readFileSync(configPath, "utf-8"));
-  } catch (error) {
-    console.error("❌ Failed to parse config.yaml:", error);
-    return getDefaultConfig();
-  }
+  } catch (error) { console.error("❌ Failed to parse config.yaml:", error); return getDefaultConfig(); }
 }
 
 function getDefaultConfig(): YamlConfig {
@@ -111,12 +101,10 @@ function getDefaultConfig(): YamlConfig {
     thresholds: { highActivity: 100, mediumActivity: 50 },
     teams: [
       { name: "Team Alpha", color: "#3b82f6", members: ["dev-sarah", "coder-alex"] },
-      { name: "Team Beta",  color: "#8b5cf6", members: ["backend-mia", "docs-guru-chen"] },
+      { name: "Team Beta", color: "#8b5cf6", members: ["backend-mia", "docs-guru-chen"] },
     ],
   };
 }
-
-// --------------- Helpers ---------------
 
 function generateEmptyDailyActivity(startStr: string, endStr: string): DailyActivity[] {
   const result: DailyActivity[] = [];
@@ -139,47 +127,46 @@ function getRepoFromUrl(url: string): string {
   return `${parts[0]}/${parts[1]}`;
 }
 
-// --------------- PATCH 1: Token Pool (rotation) ---------------
+// --------------- Token Pool ---------------
 
 class TokenPool {
   private tokens: string[];
   private index = 0;
 
   constructor() {
-    // Support comma-separated GITHUB_TOKENS env var, fall back to GITHUB_TOKEN
     const multi = process.env.GITHUB_TOKENS ?? "";
     const single = process.env.GITHUB_TOKEN ?? "";
     this.tokens = multi
       ? multi.split(",").map((t) => t.trim()).filter(Boolean)
-      : single
-      ? [single]
-      : [];
-
+      : single ? [single] : [];
     if (this.tokens.length === 0) throw new Error("No GitHub token(s) configured.");
     console.log(`🔑 TokenPool initialised with ${this.tokens.length} token(s).`);
   }
 
-  /** Return current token */
-  current(): string {
-    return this.tokens[this.index];
-  }
+  current(): string { return this.tokens[this.index]; }
 
-  /** Rotate to next token and return it */
   rotate(): string {
     this.index = (this.index + 1) % this.tokens.length;
     console.warn(`🔄 Rotated to token[${this.index}].`);
     return this.tokens[this.index];
   }
 
-  get count(): number {
-    return this.tokens.length;
-  }
+  get count(): number { return this.tokens.length; }
 }
 
-// --------------- PATCH 2: fetchGithub with exponential backoff ---------------
+// --------------- fetchGithub (fixed 403 handling) ---------------
 
 const MAX_RETRIES = 5;
 const BASE_DELAY_MS = 1_000;
+
+const PERMISSIONS_ERRORS = [
+  "Resource not accessible by personal access tokens",
+  "Must have push access",
+  "Must be an org member",
+  "Must have admin rights",
+  "Not Found",
+  "Forbidden",
+];
 
 async function fetchGithub<T>(url: string, pool: TokenPool): Promise<T> {
   let attempt = 0;
@@ -194,15 +181,23 @@ async function fetchGithub<T>(url: string, pool: TokenPool): Promise<T> {
       },
     });
 
-    // ---- Rate-limit / auth errors: backoff + rotate ----
     if (response.status === 403 || response.status === 429) {
+      const body = await response.text();
+
+      // Permissions 403 — don't retry, throw immediately so caller can skip
+      if (
+        response.status === 403 &&
+        PERMISSIONS_ERRORS.some((msg) => body.includes(msg))
+      ) {
+        throw new Error(`GitHub API Error (403) at ${url}: ${body}`);
+      }
+
+      // Rate-limit 403/429 — backoff + rotate
       attempt++;
       if (attempt > MAX_RETRIES) {
-        const body = await response.text();
         throw new Error(`GitHub API rate-limit exhausted after ${MAX_RETRIES} retries at ${url}: ${body}`);
       }
 
-      // Check for Retry-After header (seconds) first
       const retryAfter = response.headers.get("retry-after");
       const rateLimitReset = response.headers.get("x-ratelimit-reset");
 
@@ -210,20 +205,21 @@ async function fetchGithub<T>(url: string, pool: TokenPool): Promise<T> {
       if (retryAfter) {
         waitMs = parseInt(retryAfter, 10) * 1_000;
       } else if (rateLimitReset) {
-        waitMs = Math.max(0, parseInt(rateLimitReset, 10) * 1_000 - Date.now());
+        // Cap wait at 60s max — if it's a permissions error mis-classified,
+        // we don't want to hang forever
+        waitMs = Math.min(
+          Math.max(0, parseInt(rateLimitReset, 10) * 1_000 - Date.now()),
+          60_000
+        );
       } else {
-        // Exponential backoff with ±20 % jitter
         const base = BASE_DELAY_MS * Math.pow(2, attempt - 1);
         waitMs = base + Math.random() * base * 0.4 - base * 0.2;
       }
 
       console.warn(`⚠️  ${response.status} on attempt ${attempt}/${MAX_RETRIES}. Waiting ${Math.round(waitMs / 1000)}s…`);
-
-      // Rotate token on 403 (likely per-token limit hit)
       if (response.status === 403 && pool.count > 1) pool.rotate();
-
       await new Promise((r) => setTimeout(r, waitMs));
-      continue; // retry
+      continue;
     }
 
     if (!response.ok) {
@@ -231,7 +227,6 @@ async function fetchGithub<T>(url: string, pool: TokenPool): Promise<T> {
       throw new Error(`GitHub API Error (${response.status}) at ${url}: ${text}`);
     }
 
-    // ---- Proactive throttle when remaining is low ----
     const remaining = response.headers.get("x-ratelimit-remaining");
     const reset = response.headers.get("x-ratelimit-reset");
     if (remaining !== null && parseInt(remaining, 10) < 30) {
@@ -239,30 +234,26 @@ async function fetchGithub<T>(url: string, pool: TokenPool): Promise<T> {
       console.warn(`⚠️  Rate limit low (${remaining} left). Pausing ${Math.round(sleepTime / 1000)}s…`);
       await new Promise((r) => setTimeout(r, sleepTime));
     } else {
-      await new Promise((r) => setTimeout(r, 150)); // standard light throttle
+      await new Promise((r) => setTimeout(r, 150));
     }
 
     return response.json() as Promise<T>;
   }
 }
 
-// --------------- PATCH 3: fetchUserProfile (/users/{username}) ---------------
+// --------------- fetchUserProfile ---------------
 
 interface GitHubUserProfile {
   login: string;
   avatar_url: string;
   html_url: string;
-  name: string | null;   // display name
+  name: string | null;
   bio: string | null;
 }
 
 async function fetchUserProfile(username: string, pool: TokenPool): Promise<GitHubUserProfile | null> {
   try {
-    const data = await fetchGithub<GitHubUserProfile>(
-      `https://api.github.com/users/${encodeURIComponent(username)}`,
-      pool
-    );
-    return data;
+    return await fetchGithub<GitHubUserProfile>(`https://api.github.com/users/${encodeURIComponent(username)}`, pool);
   } catch (err: any) {
     console.warn(`   ⚠️  Could not fetch profile for "${username}": ${err.message}`);
     return null;
@@ -284,7 +275,7 @@ async function fetchLiveContributors(config: YamlConfig, pool: TokenPool): Promi
       const teamObj = config.teams.find((t) => t.members.map((m) => m.toLowerCase()).includes(key));
       userMap.set(key, {
         username,
-        avatarUrl: avatarUrl || `https://avatars.githubusercontent.com/u/0?v=4`,
+        avatarUrl: avatarUrl || `https://avatars.githubusercontent.com/${username}`,
         profileUrl: `https://github.com/${username}`,
         team: teamObj ? teamObj.name : "Independent",
         prsOpened: 0, prsMerged: 0, prsReviewed: 0, issuesOpened: 0, issuesClosed: 0,
@@ -294,49 +285,40 @@ async function fetchLiveContributors(config: YamlConfig, pool: TokenPool): Promi
       });
     }
     const item = userMap.get(key)!;
-    if (avatarUrl && item.avatarUrl.includes("/u/0?v=4")) item.avatarUrl = avatarUrl;
+    if (avatarUrl && item.avatarUrl === `https://avatars.githubusercontent.com/${username}`) item.avatarUrl = avatarUrl;
     return item;
   };
 
-  // Seed all registered members so they appear even with zero points
-  for (const team of config.teams) {
-    for (const member of team.members) {
+  for (const team of config.teams)
+    for (const member of team.members)
       getOrCreateContributor(member);
-    }
-  }
 
-  // --- PATCH 3 applied: enrich profiles from /users/{username} ---
   console.log("👤 Fetching GitHub user profiles for registered members...");
-  for (const [key, contributor] of userMap.entries()) {
+  for (const [, contributor] of userMap.entries()) {
     const profile = await fetchUserProfile(contributor.username, pool);
     if (profile) {
       contributor.avatarUrl = profile.avatar_url;
       contributor.profileUrl = profile.html_url;
-      // Attach displayName and bio if the Contributor type supports them
-      // (add these fields to src/types if not yet present)
       (contributor as any).displayName = profile.name ?? contributor.username;
       (contributor as any).bio = profile.bio ?? "";
     }
   }
 
   const { eventStartDate: startDate, eventEndDate: endDate } = config;
-
-  const processedPrsOpened   = new Set<string>();
-  const processedPrsMerged   = new Set<string>();
+  const processedPrsOpened = new Set<string>();
+  const processedPrsMerged = new Set<string>();
   const processedIssuesOpened = new Set<string>();
   const processedIssuesClosed = new Set<string>();
-  const processedReviews     = new Set<string>();
+  const processedReviews = new Set<string>();
 
   // 1. PRs Opened
   console.log("🔍 Fetching PRs opened...");
   let page = 1;
   while (true) {
     const q = `org:${config.organization}+is:pr+created:${startDate}..${endDate}`;
-    const url = `https://api.github.com/search/issues?q=${q}&per_page=100&page=${page}`;
-    const data: any = await fetchGithub(url, pool);
+    const data: any = await fetchGithub(`https://api.github.com/search/issues?q=${q}&per_page=100&page=${page}`, pool);
     const items = data.items || [];
     if (items.length === 0) break;
-
     for (const item of items) {
       const repo = getRepoFromUrl(item.html_url);
       if (!reposSet.has(repo.toLowerCase())) continue;
@@ -360,11 +342,9 @@ async function fetchLiveContributors(config: YamlConfig, pool: TokenPool): Promi
   page = 1;
   while (true) {
     const q = `org:${config.organization}+is:pr+is:merged+merged:${startDate}..${endDate}`;
-    const url = `https://api.github.com/search/issues?q=${q}&per_page=100&page=${page}`;
-    const data: any = await fetchGithub(url, pool);
+    const data: any = await fetchGithub(`https://api.github.com/search/issues?q=${q}&per_page=100&page=${page}`, pool);
     const items = data.items || [];
     if (items.length === 0) break;
-
     for (const item of items) {
       const repo = getRepoFromUrl(item.html_url);
       if (!reposSet.has(repo.toLowerCase())) continue;
@@ -388,11 +368,9 @@ async function fetchLiveContributors(config: YamlConfig, pool: TokenPool): Promi
   page = 1;
   while (true) {
     const q = `org:${config.organization}+is:issue+created:${startDate}..${endDate}`;
-    const url = `https://api.github.com/search/issues?q=${q}&per_page=100&page=${page}`;
-    const data: any = await fetchGithub(url, pool);
+    const data: any = await fetchGithub(`https://api.github.com/search/issues?q=${q}&per_page=100&page=${page}`, pool);
     const items = data.items || [];
     if (items.length === 0) break;
-
     for (const item of items) {
       const repo = getRepoFromUrl(item.html_url);
       if (!reposSet.has(repo.toLowerCase())) continue;
@@ -416,11 +394,9 @@ async function fetchLiveContributors(config: YamlConfig, pool: TokenPool): Promi
   page = 1;
   while (true) {
     const q = `org:${config.organization}+is:issue+is:closed+closed:${startDate}..${endDate}`;
-    const url = `https://api.github.com/search/issues?q=${q}&per_page=100&page=${page}`;
-    const data: any = await fetchGithub(url, pool);
+    const data: any = await fetchGithub(`https://api.github.com/search/issues?q=${q}&per_page=100&page=${page}`, pool);
     const items = data.items || [];
     if (items.length === 0) break;
-
     for (const item of items) {
       const repo = getRepoFromUrl(item.html_url);
       if (!reposSet.has(repo.toLowerCase())) continue;
@@ -447,10 +423,8 @@ async function fetchLiveContributors(config: YamlConfig, pool: TokenPool): Promi
   for (const prUrl of activePRs) {
     try {
       const repo = getRepoFromUrl(prUrl);
-      const parts = prUrl.replace("https://github.com/", "").split("/");
-      const prNumber = parts[3];
+      const prNumber = prUrl.replace("https://github.com/", "").split("/")[3];
       const reviews: any[] = await fetchGithub(`https://api.github.com/repos/${repo}/pulls/${prNumber}/reviews`, pool);
-
       for (const review of reviews) {
         if (!review.user || !registeredUsers.has(review.user.login.toLowerCase())) continue;
         const reviewer = review.user.login;
@@ -470,7 +444,7 @@ async function fetchLiveContributors(config: YamlConfig, pool: TokenPool): Promi
     }
   }
 
-  // 6. Compute Scores & Activity Levels
+  // 6. Compute scores
   console.log("📊 Finalizing contributor calculations...");
   const contributors = Array.from(userMap.values());
   for (const c of contributors) {
@@ -480,7 +454,6 @@ async function fetchLiveContributors(config: YamlConfig, pool: TokenPool): Promi
       c.prsReviewed * config.scoringWeights.prReviewed +
       c.issuesClosed * config.scoringWeights.issueClosed +
       c.issuesOpened * config.scoringWeights.issueOpened;
-
     for (const d of c.dailyActivity) {
       d.score =
         d.prsMerged * config.scoringWeights.prMerged +
@@ -489,48 +462,22 @@ async function fetchLiveContributors(config: YamlConfig, pool: TokenPool): Promi
         d.issuesClosed * config.scoringWeights.issueClosed +
         d.issuesOpened * config.scoringWeights.issueOpened;
     }
-
     c.activityLevel = c.score >= config.thresholds.highActivity ? "High" : c.score >= config.thresholds.mediumActivity ? "Medium" : "Low";
     c.contributions.sort((a, b) => b.date.localeCompare(a.date));
   }
-
   return contributors;
 }
 
-// --------------- Dynamic Mock Fallback Generator ---------------
+// --------------- Mock Fallback ---------------
 
 function generateMockData(config: YamlConfig): Contributor[] {
   console.warn("⚠️  GITHUB_TOKEN missing. Generating mock simulation data.");
   const contributors: Contributor[] = [];
   const start = new Date(config.eventStartDate);
-  const end   = new Date(config.eventEndDate);
-  const repos  = config.repos;
-
-  const prTitles = [
-    "Fix simulator canvas rendering in high-DPI screens",
-    "Add dark mode support to interactive book docs",
-    "Optimize truth table generation gate recursion",
-    "Add PDF/PNG export support in simulator layout",
-    "Implement search filtration in contributor table",
-    "Refactor sequential logic flip-flop simulation",
-    "Add internationalization support for Hindi/Spanish",
-    "Fix memory threshold limits in gate drag listeners",
-    "Upgrade Next.js framework build dependencies",
-    "Improve test coverage metrics in canvas component",
-    "Add custom clock timing constraints in settings",
-    "Fix touch viewport alignment bugs on iOS Chrome",
-  ];
-
-  const issueTitles = [
-    "Simulator UI freeze on large recursive circuit runs",
-    "Dark mode style sheets have low contrast margins",
-    "Subcircuit inputs fail to trigger state updates",
-    "Interactive book sandbox returns 404 console error",
-    "Touch gate drag and drop snaps misaligned in view",
-    "Full-screen simulator mode overlaps notification panels",
-    "API endpoints timeout when reading deep historical feeds",
-    "Add keyboard map guides in drawer toggle panel",
-  ];
+  const end = new Date(config.eventEndDate);
+  const repos = config.repos;
+  const prTitles = ["Fix simulator canvas rendering in high-DPI screens","Add dark mode support to interactive book docs","Optimize truth table generation gate recursion","Add PDF/PNG export support in simulator layout","Implement search filtration in contributor table","Refactor sequential logic flip-flop simulation","Add internationalization support for Hindi/Spanish","Fix memory threshold limits in gate drag listeners","Upgrade Next.js framework build dependencies","Improve test coverage metrics in canvas component","Add custom clock timing constraints in settings","Fix touch viewport alignment bugs on iOS Chrome"];
+  const issueTitles = ["Simulator UI freeze on large recursive circuit runs","Dark mode style sheets have low contrast margins","Subcircuit inputs fail to trigger state updates","Interactive book sandbox returns 404 console error","Touch gate drag and drop snaps misaligned in view","Full-screen simulator mode overlaps notification panels","API endpoints timeout when reading deep historical feeds","Add keyboard map guides in drawer toggle panel"];
 
   let userIdx = 0;
   for (const team of config.teams) {
@@ -549,69 +496,37 @@ function generateMockData(config: YamlConfig): Contributor[] {
 
       while (currentScore < targetScore) {
         const rand = Math.random();
-        let type: ContributionItem["type"];
-        let pts = 0;
-        if      (rand < 0.25) { type = "pr_merged";     pts = config.scoringWeights.prMerged;     prsMerged++; }
-        else if (rand < 0.48) { type = "pr_opened";     pts = config.scoringWeights.prOpened;     prsOpened++; }
-        else if (rand < 0.70) { type = "pr_reviewed";   pts = config.scoringWeights.prReviewed;   prsReviewed++; }
-        else if (rand < 0.85) { type = "issue_closed";  pts = config.scoringWeights.issueClosed;  issuesClosed++; }
-        else                  { type = "issue_opened";  pts = config.scoringWeights.issueOpened;  issuesOpened++; }
+        let type: ContributionItem["type"]; let pts = 0;
+        if (rand < 0.25) { type = "pr_merged"; pts = config.scoringWeights.prMerged; prsMerged++; }
+        else if (rand < 0.48) { type = "pr_opened"; pts = config.scoringWeights.prOpened; prsOpened++; }
+        else if (rand < 0.70) { type = "pr_reviewed"; pts = config.scoringWeights.prReviewed; prsReviewed++; }
+        else if (rand < 0.85) { type = "issue_closed"; pts = config.scoringWeights.issueClosed; issuesClosed++; }
+        else { type = "issue_opened"; pts = config.scoringWeights.issueOpened; issuesOpened++; }
 
         const daysDiff = Math.ceil((end.getTime() - start.getTime()) / 86400000);
         const eventDate = new Date(start);
         eventDate.setDate(eventDate.getDate() + Math.floor(Math.random() * (daysDiff + 1)));
         const eventDateStr = eventDate.toISOString().split("T")[0];
-
         const daySlot = dailyActivity.find((d) => d.date === eventDateStr);
         if (daySlot) {
-          if      (type === "pr_opened")    daySlot.prsOpened++;
-          else if (type === "pr_merged")    daySlot.prsMerged++;
-          else if (type === "pr_reviewed")  daySlot.prsReviewed++;
+          if (type === "pr_opened") daySlot.prsOpened++;
+          else if (type === "pr_merged") daySlot.prsMerged++;
+          else if (type === "pr_reviewed") daySlot.prsReviewed++;
           else if (type === "issue_opened") daySlot.issuesOpened++;
           else if (type === "issue_closed") daySlot.issuesClosed++;
         }
-
         const repo = repos[Math.floor(Math.random() * repos.length)];
         const isPr = type.startsWith("pr_");
-        const title = isPr
-          ? `[PR] ${prTitles[Math.floor(Math.random() * prTitles.length)]}`
-          : `[Issue] ${issueTitles[Math.floor(Math.random() * issueTitles.length)]}`;
+        const title = isPr ? `[PR] ${prTitles[Math.floor(Math.random() * prTitles.length)]}` : `[Issue] ${issueTitles[Math.floor(Math.random() * issueTitles.length)]}`;
         const itemNum = Math.floor(Math.random() * 280) + 1;
-        contributions.push({
-          type, title,
-          url: isPr ? `https://github.com/${repo}/pull/${itemNum}` : `https://github.com/${repo}/issues/${itemNum}`,
-          repo, date: eventDateStr,
-        });
+        contributions.push({ type, title, url: isPr ? `https://github.com/${repo}/pull/${itemNum}` : `https://github.com/${repo}/issues/${itemNum}`, repo, date: eventDateStr });
         currentScore += pts;
       }
 
-      const score =
-        prsMerged * config.scoringWeights.prMerged +
-        prsOpened * config.scoringWeights.prOpened +
-        prsReviewed * config.scoringWeights.prReviewed +
-        issuesClosed * config.scoringWeights.issueClosed +
-        issuesOpened * config.scoringWeights.issueOpened;
-
-      for (const d of dailyActivity) {
-        d.score =
-          d.prsMerged * config.scoringWeights.prMerged +
-          d.prsOpened * config.scoringWeights.prOpened +
-          d.prsReviewed * config.scoringWeights.prReviewed +
-          d.issuesClosed * config.scoringWeights.issueClosed +
-          d.issuesOpened * config.scoringWeights.issueOpened;
-      }
-
+      const score = prsMerged * config.scoringWeights.prMerged + prsOpened * config.scoringWeights.prOpened + prsReviewed * config.scoringWeights.prReviewed + issuesClosed * config.scoringWeights.issueClosed + issuesOpened * config.scoringWeights.issueOpened;
+      for (const d of dailyActivity) { d.score = d.prsMerged * config.scoringWeights.prMerged + d.prsOpened * config.scoringWeights.prOpened + d.prsReviewed * config.scoringWeights.prReviewed + d.issuesClosed * config.scoringWeights.issueClosed + d.issuesOpened * config.scoringWeights.issueOpened; }
       contributions.sort((a, b) => b.date.localeCompare(a.date));
-
-      contributors.push({
-        username,
-        avatarUrl: `https://avatars.githubusercontent.com/u/${Math.floor(Math.random() * 1200000) + 4000000}?v=4`,
-        profileUrl: `https://github.com/${username}`,
-        team: team.name,
-        prsOpened, prsMerged, prsReviewed, issuesOpened, issuesClosed, score,
-        activityLevel: score >= config.thresholds.highActivity ? "High" : score >= config.thresholds.mediumActivity ? "Medium" : "Low",
-        dailyActivity, contributions,
-      });
+      contributors.push({ username, avatarUrl: `https://avatars.githubusercontent.com/u/${Math.floor(Math.random() * 1200000) + 4000000}?v=4`, profileUrl: `https://github.com/${username}`, team: team.name, prsOpened, prsMerged, prsReviewed, issuesOpened, issuesClosed, score, activityLevel: score >= config.thresholds.highActivity ? "High" : score >= config.thresholds.mediumActivity ? "Medium" : "Low", dailyActivity, contributions });
     }
   }
   return contributors;
@@ -622,21 +537,17 @@ async function fetchGithubTeams(config: YamlConfig, pool: TokenPool): Promise<{ 
   const teamsResponse = await fetchGithub<any[]>(`https://api.github.com/orgs/${config.organization}/teams?per_page=100`, pool);
   const colors = ["#3b82f6", "#8b5cf6", "#10b981", "#f59e0b", "#06b6d4", "#f43f5e"];
   const githubTeams: { name: string; color: string; members: string[] }[] = [];
-
   if (Array.isArray(teamsResponse)) {
     for (let i = 0; i < teamsResponse.length; i++) {
       const { slug, name } = teamsResponse[i];
-      console.log(`   Found team: "${name}" (${slug})`);
       try {
-        const membersResponse = await fetchGithub<any[]>(
-          `https://api.github.com/orgs/${config.organization}/teams/${slug}/members?per_page=100`, pool
-        );
+        const membersResponse = await fetchGithub<any[]>(`https://api.github.com/orgs/${config.organization}/teams/${slug}/members?per_page=100`, pool);
         if (Array.isArray(membersResponse)) {
           githubTeams.push({ name, color: colors[i % colors.length], members: membersResponse.map((m: any) => m.login) });
-          console.log(`   Loaded ${membersResponse.length} members for "${name}".`);
+          console.log(`   ✅ "${name}": ${membersResponse.length} members`);
         }
       } catch (err: any) {
-        console.warn(`   ⚠️ Failed to fetch members for "${slug}": ${err.message}`);
+        console.warn(`   ⚠️  Failed to fetch members for "${slug}": ${err.message}`);
       }
     }
   }
@@ -647,11 +558,10 @@ async function fetchGithubTeams(config: YamlConfig, pool: TokenPool): Promise<{ 
 
 async function main(): Promise<void> {
   console.log("🚀 Initializing Mergathon dashboard builder...");
-
   const config = loadConfig();
   let contributors: Contributor[] = [];
-
   let pool: TokenPool | null = null;
+
   try {
     pool = new TokenPool();
   } catch {
@@ -660,20 +570,14 @@ async function main(): Promise<void> {
   }
 
   if (pool) {
-    // Try live team fetch
     try {
       const fetchedTeams = await fetchGithubTeams(config, pool);
-      if (fetchedTeams.length > 0) {
-        console.log(`✅ Loaded ${fetchedTeams.length} teams from GitHub Org.`);
-        config.teams = fetchedTeams;
-      } else {
-        console.log("💡 No org teams returned – using config.yaml roster.");
-      }
+      if (fetchedTeams.length > 0) { console.log(`✅ Loaded ${fetchedTeams.length} teams from GitHub Org.`); config.teams = fetchedTeams; }
+      else console.log("💡 No org teams returned — using config.yaml roster.");
     } catch (err: any) {
-      console.warn(`⚠️ GitHub Org Teams fetch failed: ${err.message}. Falling back to config.yaml.`);
+      console.warn(`⚠️  GitHub Org Teams fetch failed: ${err.message}. Falling back to config.yaml.`);
     }
 
-    // Live contributor fetch
     try {
       contributors = await fetchLiveContributors(config, pool);
       console.log(`✅ Live data aggregated (${contributors.length} contributors).`);
@@ -684,55 +588,41 @@ async function main(): Promise<void> {
     }
   }
 
-  // Build teams
   const teams: Team[] = config.teams.map((t) => {
     const members = contributors.filter((c) => t.members.map((m) => m.toLowerCase()).includes(c.username.toLowerCase()));
-    return {
-      name: t.name, color: t.color, members: t.members,
-      totalScore:        members.reduce((s, m) => s + m.score,        0),
-      totalPrsMerged:    members.reduce((s, m) => s + m.prsMerged,    0),
-      totalPrsOpened:    members.reduce((s, m) => s + m.prsOpened,    0),
-      totalPrsReviewed:  members.reduce((s, m) => s + m.prsReviewed,  0),
-      totalIssuesClosed: members.reduce((s, m) => s + m.issuesClosed, 0),
-      totalIssuesOpened: members.reduce((s, m) => s + m.issuesOpened, 0),
-    };
+    return { name: t.name, color: t.color, members: t.members, totalScore: members.reduce((s, m) => s + m.score, 0), totalPrsMerged: members.reduce((s, m) => s + m.prsMerged, 0), totalPrsOpened: members.reduce((s, m) => s + m.prsOpened, 0), totalPrsReviewed: members.reduce((s, m) => s + m.prsReviewed, 0), totalIssuesClosed: members.reduce((s, m) => s + m.issuesClosed, 0), totalIssuesOpened: members.reduce((s, m) => s + m.issuesOpened, 0) };
   });
 
-  // Aggregate daily totals
   const dateMap = new Map<string, DailyActivity>();
   for (const c of contributors) {
     for (const d of c.dailyActivity) {
       const e = dateMap.get(d.date) ?? { date: d.date, prsOpened: 0, prsMerged: 0, prsReviewed: 0, issuesOpened: 0, issuesClosed: 0, score: 0 };
-      e.prsOpened   += d.prsOpened;   e.prsMerged  += d.prsMerged;  e.prsReviewed  += d.prsReviewed;
+      e.prsOpened += d.prsOpened; e.prsMerged += d.prsMerged; e.prsReviewed += d.prsReviewed;
       e.issuesOpened += d.issuesOpened; e.issuesClosed += d.issuesClosed; e.score += d.score;
       dateMap.set(d.date, e);
     }
   }
   const dailyTotals = Array.from(dateMap.values()).sort((a, b) => a.date.localeCompare(b.date));
 
-  // Event timing
-  const now   = new Date();
-  const start = new Date(config.eventStartDate);
-  const end   = new Date(config.eventEndDate);
+  const now = new Date(), start = new Date(config.eventStartDate), end = new Date(config.eventEndDate);
   const msPerDay = 86_400_000;
   const totalDays = Math.ceil((end.getTime() - start.getTime()) / msPerDay) + 1;
-  const daysElapsed   = Math.max(0, Math.min(Math.ceil((now.getTime()  - start.getTime()) / msPerDay), totalDays));
+  const daysElapsed = Math.max(0, Math.min(Math.ceil((now.getTime() - start.getTime()) / msPerDay), totalDays));
   const daysRemaining = Math.max(0, Math.ceil((end.getTime() - now.getTime()) / msPerDay));
 
   const stats: EventStats = {
     totalContributors: contributors.filter((c) => c.score > 0).length || contributors.length,
-    totalPrsMerged:    contributors.reduce((s, c) => s + c.prsMerged,    0),
-    totalPrsOpened:    contributors.reduce((s, c) => s + c.prsOpened,    0),
+    totalPrsMerged: contributors.reduce((s, c) => s + c.prsMerged, 0),
+    totalPrsOpened: contributors.reduce((s, c) => s + c.prsOpened, 0),
     totalIssuesClosed: contributors.reduce((s, c) => s + c.issuesClosed, 0),
     totalIssuesOpened: contributors.reduce((s, c) => s + c.issuesOpened, 0),
-    totalPrsReviewed:  contributors.reduce((s, c) => s + c.prsReviewed,  0),
+    totalPrsReviewed: contributors.reduce((s, c) => s + c.prsReviewed, 0),
     daysElapsed, daysRemaining,
   };
 
   const data: MergathonData = {
     lastUpdated: new Date().toISOString(),
-    eventStartDate: config.eventStartDate,
-    eventEndDate: config.eventEndDate,
+    eventStartDate: config.eventStartDate, eventEndDate: config.eventEndDate,
     stats, teams,
     contributors: contributors.sort((a, b) => b.score - a.score),
     dailyTotals,
@@ -745,7 +635,4 @@ async function main(): Promise<void> {
   console.log(`✅ Leaderboard data saved → ${outPath}`);
 }
 
-main().catch((err) => {
-  console.error("❌ Fatal crash:", err);
-  process.exit(1);
-});
+main().catch((err) => { console.error("❌ Fatal crash:", err); process.exit(1); });
