@@ -19,9 +19,9 @@ repositories:
 
 scoring:
   labels:
-    "Housekeeping": 1
-    "Standard Merge": 3
-    "The Heavy Lifting": 5
+    "meragathon:closed-outdated": 1
+    "meragathon:merged": 3
+    "meragathon:closed-taken-over": 5
 
 thresholds:
   highActivity: 10
