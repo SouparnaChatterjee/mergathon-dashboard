@@ -19,7 +19,7 @@ interface YamlConfig {
   eventStartDate: string;
   eventEndDate: string;
   repos: string[];
-  scoringLabels: Record<string, number>; // label -> points
+  scoringLabels: Record<string, number>;
   thresholds: { highActivity: number; mediumActivity: number };
   teams: { name: string; color: string; members: string[] }[];
 }
@@ -34,9 +34,9 @@ function parseConfigYaml(content: string): YamlConfig {
   let eventEndDate = "2026-05-31";
   const repos: string[] = [];
   const scoringLabels: Record<string, number> = {
-    "Housekeeping": 1,
-    "Standard Merge": 3,
-    "The Heavy Lifting": 5,
+    "meragathon:closed-outdated": 1,
+    "meragathon:merged": 3,
+    "meragathon:closed-taken-over": 5,
   };
   const thresholds = { highActivity: 10, mediumActivity: 3 };
   const teams: { name: string; color: string; members: string[] }[] = [];
@@ -60,9 +60,7 @@ function parseConfigYaml(content: string): YamlConfig {
     if (trimmed.startsWith("teams:")) { mode = "none"; continue; }
     if (trimmed.startsWith("members:")) { mode = "members"; continue; }
     if (trimmed.startsWith("scoring:") || trimmed.startsWith("weights:") || trimmed.startsWith("thresholds:")) { mode = "none"; continue; }
-
     if (trimmed.startsWith("-") && mode === "repos") { repos.push(trimmed.substring(1).trim().replace(/['"]/g, "")); continue; }
-
     if (mode === "labels" && trimmed.includes(":")) {
       const colonIdx = trimmed.lastIndexOf(":");
       const labelName = trimmed.substring(0, colonIdx).trim().replace(/['"]/g, "");
@@ -70,7 +68,6 @@ function parseConfigYaml(content: string): YamlConfig {
       if (labelName && !isNaN(pts)) scoringLabels[labelName] = pts;
       continue;
     }
-
     if (trimmed.startsWith("- name:")) {
       mode = "none";
       const name = trimmed.substring("- name:".length).trim().replace(/['"]/g, "");
@@ -101,7 +98,7 @@ function getDefaultConfig(): YamlConfig {
     eventName: "CircuitVerse Mergathon 2025", organization: "CircuitVerse",
     eventStartDate: "2026-05-22", eventEndDate: "2026-05-31",
     repos: ["CircuitVerse/CircuitVerse", "CircuitVerse/mobile-app", "CircuitVerse/Interactive-Book", "CircuitVerse/cv-frontend-vue"],
-    scoringLabels: { "Housekeeping": 1, "Standard Merge": 3, "The Heavy Lifting": 5 },
+    scoringLabels: { "meragathon:closed-outdated": 1, "meragathon:merged": 3, "meragathon:closed-taken-over": 5 },
     thresholds: { highActivity: 10, mediumActivity: 3 },
     teams: [
       { name: "Team Alpha", color: "#3b82f6", members: ["dev-sarah", "coder-alex"] },
@@ -110,12 +107,6 @@ function getDefaultConfig(): YamlConfig {
   };
 }
 
-// --------------- Label Scoring Helper ---------------
-
-/**
- * Given the labels array from a GitHub API item, returns the highest
- * matching score from config.scoringLabels.  Returns 0 if no label matches.
- */
 function scoreFromLabels(labels: { name: string }[], scoringLabels: Record<string, number>): number {
   let best = 0;
   for (const label of labels) {
@@ -124,8 +115,6 @@ function scoreFromLabels(labels: { name: string }[], scoringLabels: Record<strin
   }
   return best;
 }
-
-// --------------- Helpers ---------------
 
 function generateEmptyDailyActivity(startStr: string, endStr: string): DailyActivity[] {
   const result: DailyActivity[] = [];
@@ -242,17 +231,27 @@ async function fetchUserProfile(username: string, pool: TokenPool): Promise<GitH
 async function fetchLiveContributors(config: YamlConfig, pool: TokenPool): Promise<Contributor[]> {
   console.log(`🌐 Connecting to GitHub API to track ${config.organization}...`);
 
-  const registeredUsers = new Set(config.teams.flatMap((t) => t.members.map((m) => m.toLowerCase())));
+  // Build a username -> team lookup from config.yaml
+  const memberTeamMap = new Map<string, string>();
+  for (const team of config.teams) {
+    for (const member of team.members) {
+      memberTeamMap.set(member.toLowerCase(), team.name);
+    }
+  }
+
   const reposSet = new Set(config.repos.map((r) => r.toLowerCase()));
   const userMap = new Map<string, Contributor>();
 
+  // NOTE: No pre-registered roster filter — anyone who contributes gets tracked
   const getOrCreateContributor = (username: string, avatarUrl = ""): Contributor => {
     const key = username.toLowerCase();
     if (!userMap.has(key)) {
-      const teamObj = config.teams.find((t) => t.members.map((m) => m.toLowerCase()).includes(key));
+      const teamName = memberTeamMap.get(key) ?? "Independent";
       userMap.set(key, {
-        username, avatarUrl: avatarUrl || `https://avatars.githubusercontent.com/${username}`,
-        profileUrl: `https://github.com/${username}`, team: teamObj ? teamObj.name : "Independent",
+        username,
+        avatarUrl: avatarUrl || `https://avatars.githubusercontent.com/${username}`,
+        profileUrl: `https://github.com/${username}`,
+        team: teamName,
         prsOpened: 0, prsMerged: 0, prsReviewed: 0, issuesOpened: 0, issuesClosed: 0,
         score: 0, activityLevel: "Low",
         dailyActivity: generateEmptyDailyActivity(config.eventStartDate, config.eventEndDate),
@@ -264,57 +263,14 @@ async function fetchLiveContributors(config: YamlConfig, pool: TokenPool): Promi
     return item;
   };
 
-  for (const team of config.teams) for (const member of team.members) getOrCreateContributor(member);
-
-  console.log("👤 Fetching GitHub user profiles...");
-  for (const [, contributor] of userMap.entries()) {
-    const profile = await fetchUserProfile(contributor.username, pool);
-    if (profile) {
-      contributor.avatarUrl = profile.avatar_url;
-      contributor.profileUrl = profile.html_url;
-      (contributor as any).displayName = profile.name ?? contributor.username;
-      (contributor as any).bio = profile.bio ?? "";
-    }
-  }
-
   const { eventStartDate: startDate, eventEndDate: endDate, scoringLabels } = config;
-  const processedPrsOpened = new Set<string>();
   const processedPrsMerged = new Set<string>();
   const processedIssuesClosed = new Set<string>();
   const processedReviews = new Set<string>();
 
-  // 1. PRs Opened — only count if has a scoring label
-  console.log("🔍 Fetching PRs opened...");
-  let page = 1;
-  while (true) {
-    const q = `org:${config.organization}+is:pr+created:${startDate}..${endDate}`;
-    const data: any = await fetchGithub(`https://api.github.com/search/issues?q=${q}&per_page=100&page=${page}`, pool);
-    const items = data.items || [];
-    if (items.length === 0) break;
-    for (const item of items) {
-      const repo = getRepoFromUrl(item.html_url);
-      if (!reposSet.has(repo.toLowerCase())) continue;
-      const author = item.user.login;
-      if (!registeredUsers.has(author.toLowerCase())) continue;
-      if (processedPrsOpened.has(item.html_url)) continue;
-      processedPrsOpened.add(item.html_url);
-      const pts = scoreFromLabels(item.labels || [], scoringLabels);
-      if (pts === 0) continue; // no matching label, skip
-      const contributor = getOrCreateContributor(author, item.user.avatar_url);
-      const dateStr = item.created_at.split("T")[0];
-      contributor.prsOpened++;
-      contributor.score += pts;
-      contributor.contributions.push({ type: "pr_opened", title: item.title, url: item.html_url, repo, date: dateStr });
-      const daySlot = contributor.dailyActivity.find((d) => d.date === dateStr);
-      if (daySlot) { daySlot.prsOpened++; daySlot.score += pts; }
-    }
-    if (items.length < 100) break;
-    page++;
-  }
-
-  // 2. PRs Merged — only count if has a scoring label
+  // 1. PRs Merged — credit the PR author, scored by label
   console.log("🔍 Fetching PRs merged...");
-  page = 1;
+  let page = 1;
   while (true) {
     const q = `org:${config.organization}+is:pr+is:merged+merged:${startDate}..${endDate}`;
     const data: any = await fetchGithub(`https://api.github.com/search/issues?q=${q}&per_page=100&page=${page}`, pool);
@@ -323,12 +279,11 @@ async function fetchLiveContributors(config: YamlConfig, pool: TokenPool): Promi
     for (const item of items) {
       const repo = getRepoFromUrl(item.html_url);
       if (!reposSet.has(repo.toLowerCase())) continue;
-      const author = item.user.login;
-      if (!registeredUsers.has(author.toLowerCase())) continue;
       if (processedPrsMerged.has(item.html_url)) continue;
-      processedPrsMerged.add(item.html_url);
       const pts = scoreFromLabels(item.labels || [], scoringLabels);
       if (pts === 0) continue;
+      processedPrsMerged.add(item.html_url);
+      const author = item.user.login;
       const contributor = getOrCreateContributor(author, item.user.avatar_url);
       const dateStr = (item.closed_at || item.updated_at).split("T")[0];
       contributor.prsMerged++;
@@ -341,7 +296,7 @@ async function fetchLiveContributors(config: YamlConfig, pool: TokenPool): Promi
     page++;
   }
 
-  // 3. Issues Closed — only count if has a scoring label
+  // 2. Issues Closed — fetch individual issue to get closed_by, scored by label
   console.log("🔍 Fetching Issues closed...");
   page = 1;
   while (true) {
@@ -352,15 +307,27 @@ async function fetchLiveContributors(config: YamlConfig, pool: TokenPool): Promi
     for (const item of items) {
       const repo = getRepoFromUrl(item.html_url);
       if (!reposSet.has(repo.toLowerCase())) continue;
-      const assigneeObj = item.assignee;
-      if (!assigneeObj) continue;
-      const author = assigneeObj.login;
-      if (!registeredUsers.has(author.toLowerCase())) continue;
       if (processedIssuesClosed.has(item.html_url)) continue;
-      processedIssuesClosed.add(item.html_url);
       const pts = scoreFromLabels(item.labels || [], scoringLabels);
       if (pts === 0) continue;
-      const contributor = getOrCreateContributor(author, assigneeObj.avatar_url);
+      processedIssuesClosed.add(item.html_url);
+
+      // Fetch full issue to get closed_by (not available in search results)
+      let closer = item.user?.login;
+      let closerAvatar = item.user?.avatar_url ?? "";
+      try {
+        const issueNumber = item.html_url.replace("https://github.com/", "").split("/")[3];
+        const fullIssue: any = await fetchGithub(`https://api.github.com/repos/${repo}/issues/${issueNumber}`, pool);
+        if (fullIssue.closed_by?.login) {
+          closer = fullIssue.closed_by.login;
+          closerAvatar = fullIssue.closed_by.avatar_url ?? closerAvatar;
+        }
+      } catch (err: any) {
+        console.warn(`   ⚠️  Could not fetch full issue for ${item.html_url}: ${err.message}`);
+      }
+
+      if (!closer) continue;
+      const contributor = getOrCreateContributor(closer, closerAvatar);
       const dateStr = (item.closed_at || item.updated_at).split("T")[0];
       contributor.issuesClosed++;
       contributor.score += pts;
@@ -372,24 +339,23 @@ async function fetchLiveContributors(config: YamlConfig, pool: TokenPool): Promi
     page++;
   }
 
-  // 4. PR Reviews
+  // 3. PR Reviews — credit the reviewer
   console.log("🔍 Fetching PR reviews...");
-  const activePRs = Array.from(new Set([...processedPrsOpened, ...processedPrsMerged]));
+  const activePRs = Array.from(processedPrsMerged);
   for (const prUrl of activePRs) {
     try {
       const repo = getRepoFromUrl(prUrl);
       const prNumber = prUrl.replace("https://github.com/", "").split("/")[3];
       const reviews: any[] = await fetchGithub(`https://api.github.com/repos/${repo}/pulls/${prNumber}/reviews`, pool);
       for (const review of reviews) {
-        if (!review.user || !registeredUsers.has(review.user.login.toLowerCase())) continue;
+        if (!review.user) continue;
         const reviewer = review.user.login;
         const submittedDateStr = review.submitted_at ? review.submitted_at.split("T")[0] : null;
         if (!submittedDateStr || !isWithinEventWindow(submittedDateStr, startDate, endDate)) continue;
         const reviewKey = `${prUrl}-${reviewer}-${review.id}`;
         if (processedReviews.has(reviewKey)) continue;
         processedReviews.add(reviewKey);
-        // Reviews get Standard Merge points by default (reviewer helped land the PR)
-        const pts = scoringLabels["Standard Merge"] ?? 3;
+        const pts = scoringLabels["meragathon:merged"] ?? 3;
         const contributor = getOrCreateContributor(reviewer, review.user.avatar_url);
         contributor.prsReviewed++;
         contributor.score += pts;
@@ -402,7 +368,19 @@ async function fetchLiveContributors(config: YamlConfig, pool: TokenPool): Promi
     }
   }
 
-  // 5. Finalize activity levels
+  // 4. Fetch live profiles for all discovered contributors
+  console.log("👤 Fetching GitHub user profiles...");
+  for (const [, contributor] of userMap.entries()) {
+    const profile = await fetchUserProfile(contributor.username, pool);
+    if (profile) {
+      contributor.avatarUrl = profile.avatar_url;
+      contributor.profileUrl = profile.html_url;
+      (contributor as any).displayName = profile.name ?? contributor.username;
+      (contributor as any).bio = profile.bio ?? "";
+    }
+  }
+
+  // 5. Finalize
   console.log("📊 Finalizing contributor calculations...");
   const contributors = Array.from(userMap.values());
   for (const c of contributors) {
@@ -533,6 +511,7 @@ async function main(): Promise<void> {
     }
   }
 
+  // Build teams — registered members get their team, everyone else is "Independent"
   const teams: Team[] = config.teams.map((t) => {
     const members = contributors.filter((c) => t.members.map((m) => m.toLowerCase()).includes(c.username.toLowerCase()));
     return { name: t.name, color: t.color, members: t.members,
@@ -544,6 +523,22 @@ async function main(): Promise<void> {
       totalIssuesOpened: members.reduce((s, m) => s + m.issuesOpened, 0),
     };
   });
+
+  // Add an "Independent" team for unregistered contributors who still scored
+  const independents = contributors.filter((c) => c.team === "Independent" && c.score > 0);
+  if (independents.length > 0) {
+    teams.push({
+      name: "Independent",
+      color: "#6b7280",
+      members: independents.map((c) => c.username),
+      totalScore: independents.reduce((s, m) => s + m.score, 0),
+      totalPrsMerged: independents.reduce((s, m) => s + m.prsMerged, 0),
+      totalPrsOpened: independents.reduce((s, m) => s + m.prsOpened, 0),
+      totalPrsReviewed: independents.reduce((s, m) => s + m.prsReviewed, 0),
+      totalIssuesClosed: independents.reduce((s, m) => s + m.issuesClosed, 0),
+      totalIssuesOpened: independents.reduce((s, m) => s + m.issuesOpened, 0),
+    });
+  }
 
   const dateMap = new Map<string, DailyActivity>();
   for (const c of contributors) {
