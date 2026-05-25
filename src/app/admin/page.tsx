@@ -239,16 +239,27 @@ export default function AdminPage() {
           members: [...t.members],
         }))
       );
-      // Map contributors
-      setContributorsList(
-        data.contributors.map((c) => ({
-          username: c.username,
-          avatarUrl: c.avatarUrl,
-          score: c.score,
-          prsMerged: c.prsMerged,
-          issuesClosed: c.issuesClosed,
-        }))
-      );
+      // Map contributors — start from scored contributors, then fill in any team member
+      // who has no contributions yet (excluded from data.contributors by the script).
+      const scoredMembers: DraftMember[] = data.contributors.map((c) => ({
+        username: c.username,
+        avatarUrl: c.avatarUrl,
+        score: c.score,
+        prsMerged: c.prsMerged,
+        issuesClosed: c.issuesClosed,
+      }));
+      const scoredUsernames = new Set(scoredMembers.map((m) => m.username.toLowerCase()));
+      const allTeamUsernames = data.teams.flatMap((t) => t.members);
+      const zeroScoreMembers: DraftMember[] = allTeamUsernames
+        .filter((u) => !scoredUsernames.has(u.toLowerCase()))
+        .map((u) => ({
+          username: u,
+          avatarUrl: `https://avatars.githubusercontent.com/${u}`,
+          score: 0,
+          prsMerged: 0,
+          issuesClosed: 0,
+        }));
+      setContributorsList([...scoredMembers, ...zeroScoreMembers]);
     }
   }, [data]);
 
@@ -632,8 +643,13 @@ export default function AdminPage() {
                   <div style={{ display: "flex", flexDirection: "column", gap: "8px", minHeight: "150px", maxHeight: "380px", overflowY: "auto", paddingRight: "4px" }}>
                     {team.members.length > 0 ? (
                       team.members.map((username) => {
-                        const memberInfo = contributorsList.find((c) => c.username.toLowerCase() === username.toLowerCase());
-                        if (!memberInfo) return null;
+                        const memberInfo = contributorsList.find((c) => c.username.toLowerCase() === username.toLowerCase()) ?? {
+                          username,
+                          avatarUrl: `https://avatars.githubusercontent.com/${username}`,
+                          score: 0,
+                          prsMerged: 0,
+                          issuesClosed: 0,
+                        };
                         
                         return (
                           <div 
