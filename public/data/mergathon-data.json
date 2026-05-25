@@ -19,7 +19,8 @@
       "members": [
         "ShinichiShi",
         "naman79820",
-        "Asrani-Aman"
+        "Asrani-Aman",
+        "aryan7071"
       ],
       "totalScore": 13,
       "totalPrsMerged": 2,
@@ -53,15 +54,15 @@
         "Aakansha-Chavan",
         "yashikajotwani12"
       ],
-      "totalScore": 0,
+      "totalScore": 1,
       "totalPrsMerged": 0,
       "totalPrsOpened": 0,
       "totalPrsReviewed": 0,
-      "totalIssuesClosed": 0,
+      "totalIssuesClosed": 1,
       "totalIssuesOpened": 0
     },
     {
-      "name": "X1",
+      "name": "Team 5",
       "color": "#f59e0b",
       "members": [
         "haaasini01"
@@ -92,7 +93,8 @@
       "name": "Team 6",
       "color": "#06b6d4",
       "members": [
-        "092vk"
+        "092vk",
+        "blazethunderstorm"
       ],
       "totalScore": 0,
       "totalPrsMerged": 0,
@@ -945,22 +947,18 @@
           "score": 0
         },
         {
-          "date": "2026-05-30",
-          "prsOpened": 0,
-          "prsMerged": 0,
-          "prsReviewed": 0,
-          "issuesOpened": 0,
-          "issuesClosed": 0,
-          "score": 0
+          "type": "issue_closed",
+          "title": "Fixed version conflicts: Upgraded compileSdk to 36, AGP to 8.9.1, Kotlin to 2.1.0, and Gradle to 8.11.1.",
+          "url": "https://github.com/CircuitVerse/mobile-app/issues/518",
+          "repo": "CircuitVerse/mobile-app",
+          "date": "2026-05-24"
         },
         {
-          "date": "2026-05-31",
-          "prsOpened": 0,
-          "prsMerged": 0,
-          "prsReviewed": 0,
-          "issuesOpened": 0,
-          "issuesClosed": 0,
-          "score": 0
+          "type": "issue_closed",
+          "title": "Android build failure: Dependencies require AGP 8.9.1+, compileSdk 36, minSdk 24, and Kotlin 2.1.0+",
+          "url": "https://github.com/CircuitVerse/mobile-app/issues/484",
+          "repo": "CircuitVerse/mobile-app",
+          "date": "2026-05-24"
         }
       ],
       "contributions": [
@@ -1186,13 +1184,11 @@
           "score": 0
         },
         {
-          "date": "2026-05-31",
-          "prsOpened": 0,
-          "prsMerged": 0,
-          "prsReviewed": 0,
-          "issuesOpened": 0,
-          "issuesClosed": 0,
-          "score": 0
+          "type": "issue_closed",
+          "title": "feat: add Brazilian Portuguese (pt-BR) i18n and simulator language switcher",
+          "url": "https://github.com/CircuitVerse/CircuitVerse/pull/7337",
+          "repo": "CircuitVerse/CircuitVerse",
+          "date": "2026-05-24"
         }
       ],
       "contributions": [
