@@ -19,6 +19,7 @@ repositories:
 
 scoring:
   labels:
+<<<<<<< Updated upstream
     closed:
       "mergathon:closed-outdated": 1
       "mergathon:closed-taken-over": 1
@@ -26,6 +27,12 @@ scoring:
     merged:
       "mergathon:merged": 3
       "mergathon:resolved-merged": 5
+=======
+    "mergathon:closed-invalid": 1
+    "mergathon:closed-outdated": 1
+    "mergathon:closed-taken-over": 5
+    "mergathon:merged": 3
+>>>>>>> Stashed changes
 
 thresholds:
   highActivity: 10
